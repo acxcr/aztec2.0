@@ -591,7 +591,7 @@ check_node_status() {
     
 
     
-    # 3. 同步状态
+    # 2. 同步状态
     local current_block
     local latest_block
     
@@ -602,11 +602,11 @@ check_node_status() {
         if [ -n "$latest_block" ] && [ "$latest_block" != "null" ]; then
             local diff=$((latest_block - current_block))
             if [ $diff -le 5 ]; then
-                echo "3. 同步状态: ✅ 已同步 (当前: $current_block, 最新: $latest_block)"
+                echo "2. 同步状态: ✅ 已同步 (当前: $current_block, 最新: $latest_block)"
             elif [ $diff -le 20 ]; then
-                echo "3. 同步状态: ⚠️  基本同步 (当前: $current_block, 最新: $latest_block, 差异: $diff)"
+                echo "2. 同步状态: ⚠️  基本同步 (当前: $current_block, 最新: $latest_block, 差异: $diff)"
             else
-                echo "3. 同步状态: 🚀 同步中 (当前: $current_block, 最新: $latest_block, 差异: $diff)"
+                echo "2. 同步状态: 🚀 同步中 (当前: $current_block, 最新: $latest_block, 差异: $diff)"
             fi
         else
             echo "2. 同步状态: ✅ 已同步 (区块: $current_block)"
