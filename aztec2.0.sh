@@ -445,6 +445,14 @@ EOF
     if docker ps -q -f name=aztec-sequencer | grep -q .; then
         print_info "✅ 升级成功！节点已重启到最新版本"
         print_info "网络已从alpha-testnet迁移到testnet"
+        
+        # 8. 清理旧的alpha-testnet目录
+        print_info "8/8: 清理旧的alpha-testnet目录..."
+        if [ -d "/root/.aztec/alpha-testnet" ]; then
+            print_info "删除旧的alpha-testnet目录..."
+            rm -rf /root/.aztec/alpha-testnet
+            print_info "旧目录已清理完成"
+        fi
     else
         print_error "❌ 升级失败，请检查日志"
     fi
