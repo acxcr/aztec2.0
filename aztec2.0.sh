@@ -362,33 +362,65 @@ upgrade_node() {
     print_info "开始升级流程（包含版本迁移）..."
     
     # 1. 停止并删除容器
-    print_info "1/5: 停止并删除当前容器..."
+    print_info "1/7: 停止并删除当前容器..."
     cd "$AZTEC_DIR"
     docker compose down
     
-    # 2. 更新配置文件 - 版本迁移
-    print_info "2/5: 更新配置文件..."
+    # 清理旧的容器日志
+    print_info "清理旧的容器日志..."
+    docker system prune -f --volumes 2>/dev/null || true
+    
+    # 2. 询问是否清空同步数据
+    echo
+    print_warning "升级选项："
+    print_info "1. 保留同步数据（推荐）"
+    print_info "2. 清空同步数据（重新同步）"
+    echo
+    read -p "请选择 (1/2): " data_choice
+    
+    if [[ "$data_choice" == "2" ]]; then
+        print_info "2/7: 清空同步数据（保留节点身份）..."
+        # 只删除同步数据，保留P2P身份文件
+        rm -rf /root/.aztec/alpha-testnet/data/archiver 2>/dev/null || true
+        rm -rf /root/.aztec/alpha-testnet/data/world_state 2>/dev/null || true
+        rm -rf /root/.aztec/alpha-testnet/data/cache 2>/dev/null || true
+        rm -rf /root/.aztec/testnet/data/archiver 2>/dev/null || true
+        rm -rf /root/.aztec/testnet/data/world_state 2>/dev/null || true
+        rm -rf /root/.aztec/testnet/data/cache 2>/dev/null || true
+        # 保留 p2p-private-key, p2p/, p2p-archive/, p2p-peers/, sentinel/ 等重要身份文件
+        print_info "同步数据已清空，节点身份已保留"
+    else
+        print_info "2/7: 保留同步数据..."
+    fi
+    
+    # 3. 删除旧镜像
+    print_info "3/7: 删除旧镜像..."
+    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
+    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
+    
+    # 4. 更新配置文件 - 版本迁移
+    print_info "4/7: 更新配置文件..."
     # 修复镜像版本（修复正则表达式）
-    sed -i 's|image: aztecprotocol/aztec:.*|image: aztecprotocol/aztec:2.0.2|' docker-compose.yml
+    sed -i 's|image: aztecprotocol/aztec:.*|image: aztecprotocol/aztec:latest|' docker-compose.yml
     # 更新网络参数
     sed -i 's|--network alpha-testnet|--network testnet|g' docker-compose.yml
     # 修复环境变量名
     sed -i 's|VALIDATOR_PRIVATE_KEYS|VALIDATOR_PRIVATE_KEY|g' docker-compose.yml
-    print_info "配置文件已更新：镜像版本2.0.2，网络testnet"
+    print_info "配置文件已更新：镜像版本latest，网络testnet"
     
-    # 3. 拉取最新镜像
-    print_info "3/5: 拉取最新镜像..."
-    docker pull aztecprotocol/aztec:2.0.2
+    # 5. 拉取最新镜像
+    print_info "5/7: 拉取最新镜像..."
+    docker pull aztecprotocol/aztec:latest
     
-    # 4. 启动新容器
-    print_info "4/5: 启动新容器..."
+    # 6. 启动新容器
+    print_info "6/7: 启动新容器..."
     docker compose up -d
     
-    # 5. 验证启动
-    print_info "5/5: 验证启动状态..."
+    # 7. 验证启动
+    print_info "7/7: 验证启动状态..."
     sleep 5
     if docker ps -q -f name=aztec-sequencer | grep -q .; then
-        print_info "✅ 升级成功！节点已重启到版本2.0.2"
+        print_info "✅ 升级成功！节点已重启到最新版本"
         print_info "网络已迁移到testnet"
     else
         print_error "❌ 升级失败，请检查日志"
@@ -595,8 +627,8 @@ check_node_status() {
     local current_block
     local latest_block
     
-    current_block=$(curl -s -X POST -d '{"method": "node_getL2Tips"}' http://localhost:8080 | jq -r ".result.proven.number" 2>/dev/null || echo "")
-    latest_block=$(curl -s -X POST -d '{"method": "node_getL2Tips"}' http://localhost:8080 | jq -r ".result.latest.number" 2>/dev/null || echo "")
+    current_block=$(curl -s -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"node_getL2Tips","params":[],"id":1}' http://localhost:8080 | jq -r ".result.proven.number" 2>/dev/null || echo "")
+    latest_block=$(curl -s -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"node_getL2Tips","params":[],"id":1}' http://localhost:8080 | jq -r ".result.latest.number" 2>/dev/null || echo "")
     
     if [ -n "$current_block" ] && [ "$current_block" != "null" ]; then
         if [ -n "$latest_block" ] && [ "$latest_block" != "null" ]; then
