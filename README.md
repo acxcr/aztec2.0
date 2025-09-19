@@ -73,31 +73,12 @@
 
 ## 目录结构
 
-### 主要目录
-```
-/root/aztec/                    # 主配置目录
-├── .env                       # 环境变量配置文件
-├── docker-compose.yml         # Docker Compose 配置文件
-└── (脚本运行时创建)
-
-/root/.aztec/alpha-testnet/data/  # 数据存储目录
-├── archiver/                  # 归档数据
-├── world_state/              # 世界状态数据
-├── cache/                    # 缓存数据
-├── p2p-private-key          # P2P 私钥文件
-├── p2p/                     # P2P 网络数据
-├── p2p-archive/             # P2P 归档数据
-├── p2p-peers/               # P2P 对等节点数据
-└── sentinel/                # 哨兵数据
-```
-
-## 路径配置
-
-### 主要路径
-- **主配置目录**: `/root/aztec/`
-- **数据存储目录**: `/root/.aztec/alpha-testnet/data/`
-- **环境变量文件**: `/root/aztec/.env`
-- **Docker配置文件**: `/root/aztec/docker-compose.yml`
+数据目录
+/root/.aztec/testnet/data/
+配置目录
+/root/aztec/
+├── .env
+└── docker-compose.yml
 
 ### 网络端口
 - **P2P 网络**: 40400/tcp, 40400/udp
