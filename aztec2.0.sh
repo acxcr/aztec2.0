@@ -8,7 +8,7 @@ set -euo pipefail
 
 # 配置
 AZTEC_DIR="/root/aztec"
-DATA_DIR="/root/.aztec/alpha-testnet/data"
+DATA_DIR="/root/.aztec/testnet/data"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -205,7 +205,7 @@ services:
       LOG_LEVEL: \${LOG_LEVEL}
     entrypoint: >
       sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start 
-        --network alpha-testnet 
+        --network testnet 
         --node 
         --archiver 
         --sequencer 
@@ -402,11 +402,11 @@ upgrade_node() {
     print_info "4/7: 更新配置文件..."
     # 修复镜像版本（修复正则表达式）
     sed -i 's|image: aztecprotocol/aztec:.*|image: aztecprotocol/aztec:latest|' docker-compose.yml
-    # 更新网络参数
+    # 更新网络参数（从alpha-testnet迁移到testnet）
     sed -i 's|--network alpha-testnet|--network testnet|g' docker-compose.yml
     # 修复环境变量名
     sed -i 's|VALIDATOR_PRIVATE_KEYS|VALIDATOR_PRIVATE_KEY|g' docker-compose.yml
-    print_info "配置文件已更新：镜像版本latest，网络testnet"
+    print_info "配置文件已更新：镜像版本latest，网络从alpha-testnet迁移到testnet"
     
     # 5. 拉取最新镜像
     print_info "5/7: 拉取最新镜像..."
@@ -421,7 +421,7 @@ upgrade_node() {
     sleep 5
     if docker ps -q -f name=aztec-sequencer | grep -q .; then
         print_info "✅ 升级成功！节点已重启到最新版本"
-        print_info "网络已迁移到testnet"
+        print_info "网络已从alpha-testnet迁移到testnet"
     else
         print_error "❌ 升级失败，请检查日志"
     fi
