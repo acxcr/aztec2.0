@@ -541,7 +541,7 @@ main_menu() {
         echo -e "${BORDER_COLOR}│                                                         │${RESET}"
         echo -e "${BORDER_COLOR}│              ${TITLE_COLOR}🚀 Aztec 2.0 节点部署脚本 🚀${RESET}${BORDER_COLOR}                 │${RESET}"
         echo -e "${BORDER_COLOR}│                                                         │${RESET}"
-        echo -e "${BORDER_COLOR}│           ${SUBTITLE_COLOR}基于官方资料，由 aztec 与 Claude 共同设计${RESET}${BORDER_COLOR}      │${RESET}"
+        echo -e "${BORDER_COLOR}│           ${SUBTITLE_COLOR}基于官方资料，由 acxcr 与 Claude 共同设计${RESET}${BORDER_COLOR}      │${RESET}"
         echo -e "${BORDER_COLOR}│                                                         │${RESET}"
         echo -e "${BORDER_COLOR}└─────────────────────────────────────────────────────────┘${RESET}"
         echo
