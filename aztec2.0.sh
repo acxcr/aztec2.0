@@ -370,7 +370,25 @@ upgrade_node() {
     print_info "清理旧的容器日志..."
     docker system prune -f --volumes 2>/dev/null || true
     
-    # 2. 询问是否清空同步数据
+    # 2. 迁移重要文件并询问是否清空同步数据
+    print_info "2/7: 迁移重要文件..."
+    
+    # 创建新的数据目录
+    mkdir -p /root/.aztec/testnet/data
+    
+    # 迁移重要的身份文件（如果存在）
+    if [ -d "/root/.aztec/alpha-testnet/data" ]; then
+        print_info "迁移节点身份文件..."
+        # 迁移P2P相关文件
+        [ -f "/root/.aztec/alpha-testnet/data/p2p-private-key" ] && cp /root/.aztec/alpha-testnet/data/p2p-private-key /root/.aztec/testnet/data/ 2>/dev/null || true
+        [ -d "/root/.aztec/alpha-testnet/data/p2p" ] && cp -r /root/.aztec/alpha-testnet/data/p2p /root/.aztec/testnet/data/ 2>/dev/null || true
+        [ -d "/root/.aztec/alpha-testnet/data/p2p-archive" ] && cp -r /root/.aztec/alpha-testnet/data/p2p-archive /root/.aztec/testnet/data/ 2>/dev/null || true
+        [ -d "/root/.aztec/alpha-testnet/data/p2p-peers" ] && cp -r /root/.aztec/alpha-testnet/data/p2p-peers /root/.aztec/testnet/data/ 2>/dev/null || true
+        [ -d "/root/.aztec/alpha-testnet/data/sentinel" ] && cp -r /root/.aztec/alpha-testnet/data/sentinel /root/.aztec/testnet/data/ 2>/dev/null || true
+        [ -d "/root/.aztec/alpha-testnet/data/slasher" ] && cp -r /root/.aztec/alpha-testnet/data/slasher /root/.aztec/testnet/data/ 2>/dev/null || true
+        print_info "节点身份文件迁移完成"
+    fi
+    
     echo
     print_warning "升级选项："
     print_info "1. 保留同步数据（推荐）"
@@ -379,18 +397,14 @@ upgrade_node() {
     read -p "请选择 (1/2): " data_choice
     
     if [[ "$data_choice" == "2" ]]; then
-        print_info "2/7: 清空同步数据（保留节点身份）..."
+        print_info "清空同步数据（保留节点身份）..."
         # 只删除同步数据，保留P2P身份文件
-        rm -rf /root/.aztec/alpha-testnet/data/archiver 2>/dev/null || true
-        rm -rf /root/.aztec/alpha-testnet/data/world_state 2>/dev/null || true
-        rm -rf /root/.aztec/alpha-testnet/data/cache 2>/dev/null || true
         rm -rf /root/.aztec/testnet/data/archiver 2>/dev/null || true
         rm -rf /root/.aztec/testnet/data/world_state 2>/dev/null || true
         rm -rf /root/.aztec/testnet/data/cache 2>/dev/null || true
-        # 保留 p2p-private-key, p2p/, p2p-archive/, p2p-peers/, sentinel/ 等重要身份文件
         print_info "同步数据已清空，节点身份已保留"
     else
-        print_info "2/7: 保留同步数据..."
+        print_info "保留同步数据..."
     fi
     
     # 3. 删除旧镜像
