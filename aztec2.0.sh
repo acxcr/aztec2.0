@@ -583,14 +583,15 @@ main_menu() {
         echo -e "${OPTION_COLOR}    3. 调整日志级别${RESET}"
         echo -e "${OPTION_COLOR}    4. 升级节点容器${RESET}"
         echo -e "${OPTION_COLOR}    5. 查看节点状态${RESET}"
-        echo -e "${OPTION_COLOR}    6. 彻底删除节点${RESET}"
-        echo -e "${OPTION_COLOR}    7. 退出${RESET}"
+        echo -e "${OPTION_COLOR}    6. 重启节点${RESET}"
+        echo -e "${OPTION_COLOR}    7. 彻底删除节点${RESET}"
+        echo -e "${OPTION_COLOR}    8. 退出${RESET}"
         echo
         echo -e "${SEPARATOR_COLOR}    ────────────────────────────────────────────────${RESET}"
         echo
         echo -e "${HINT_COLOR}    q. 退出脚本${RESET}"
         echo
-        read -p "    请输入选项 [1-7, q]: " choice
+        read -p "    请输入选项 [1-8, q]: " choice
 
         case $choice in
             1)
@@ -621,19 +622,68 @@ main_menu() {
                 check_node_status
                 ;;
             6)
+                restart_node
+                ;;
+            7)
                 delete_node
                 ;;
-            7|q|Q)
+            8|q|Q)
                 print_info "感谢使用，再见！"
                 exit 0
                 ;;
             *)
-                print_info "无效选项，请输入 1-7 或 q。"
+                print_info "无效选项，请输入 1-8 或 q。"
                 echo "按任意键返回主菜单..."
                 read -n 1
                 ;;
         esac
     done
+}
+
+# 重启节点
+restart_node() {
+    print_step "重启 Aztec 节点..."
+    
+    # 检查容器是否存在
+    if ! docker ps -a -q -f name=aztec-sequencer | grep -q .; then
+        print_error "未找到节点容器，请先安装节点"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+    
+    # 检查容器是否运行
+    if docker ps -q -f name=aztec-sequencer | grep -q .; then
+        print_info "正在重启节点..."
+        docker restart aztec-sequencer
+        
+        # 等待几秒让容器启动
+        sleep 3
+        
+        # 检查重启是否成功
+        if docker ps -q -f name=aztec-sequencer | grep -q .; then
+            print_info "✅ 节点重启成功！"
+            print_info "节点正在启动中，请稍等片刻后查看状态"
+        else
+            print_error "❌ 节点重启失败，请检查日志"
+        fi
+    else
+        print_info "节点未运行，正在启动..."
+        docker start aztec-sequencer
+        
+        # 等待几秒让容器启动
+        sleep 3
+        
+        # 检查启动是否成功
+        if docker ps -q -f name=aztec-sequencer | grep -q .; then
+            print_info "✅ 节点启动成功！"
+        else
+            print_error "❌ 节点启动失败，请检查日志"
+        fi
+    fi
+    
+    echo "按任意键返回主菜单..."
+    read -n 1
 }
 
 # 查看节点状态
