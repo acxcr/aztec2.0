@@ -204,18 +204,7 @@ services:
       DATA_DIRECTORY: \${DATA_DIRECTORY}
       LOG_LEVEL: \${LOG_LEVEL}
     entrypoint: >
-      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start 
-        --network testnet 
-        --node 
-        --archiver 
-        --sequencer 
-        --l1-rpc-urls \$ETHEREUM_HOSTS 
-        --l1-consensus-host-urls \$L1_CONSENSUS_HOST_URLS 
-        --l1-chain-id 11155111 
-        --sequencer.validatorPrivateKeys \$VALIDATOR_PRIVATE_KEY 
-        --sequencer.coinbase \$COINBASE 
-        --p2p.p2pIp \$P2P_IP 
-        --data-directory /data"
+      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer"
     volumes:
       - $DATA_DIR:/data
 EOF
@@ -351,9 +340,9 @@ upgrade_node() {
         return
     fi
     
-    # 检查容器是否运行
-    if ! docker ps -q -f name=aztec-sequencer | grep -q .; then
-        print_error "节点未运行，无法升级"
+    # 检查容器是否存在（运行或停止都可以升级）
+    if ! docker ps -a -q -f name=aztec-sequencer | grep -q .; then
+        print_error "未找到节点容器，请先安装节点"
         echo "按任意键返回主菜单..."
         read -n 1
         return
@@ -414,13 +403,33 @@ upgrade_node() {
     
     # 4. 更新配置文件 - 版本迁移
     print_info "4/7: 更新配置文件..."
-    # 修复镜像版本（修复正则表达式）
-    sed -i 's|image: aztecprotocol/aztec:.*|image: aztecprotocol/aztec:latest|' docker-compose.yml
-    # 更新网络参数（从alpha-testnet迁移到testnet）
-    sed -i 's|--network alpha-testnet|--network testnet|g' docker-compose.yml
-    # 修复环境变量名
-    sed -i 's|VALIDATOR_PRIVATE_KEYS|VALIDATOR_PRIVATE_KEY|g' docker-compose.yml
-    print_info "配置文件已更新：镜像版本latest，网络从alpha-testnet迁移到testnet"
+    # 重新创建正确的 docker-compose.yml 文件
+    cat > docker-compose.yml <<EOF
+services:
+  aztec-sequencer:
+    container_name: aztec-sequencer
+    network_mode: host
+    image: aztecprotocol/aztec:latest
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    environment:
+      ETHEREUM_HOSTS: \${ETHEREUM_HOSTS}
+      L1_CONSENSUS_HOST_URLS: \${L1_CONSENSUS_HOST_URLS}
+      P2P_IP: \${P2P_IP}
+      VALIDATOR_PRIVATE_KEY: \${VALIDATOR_PRIVATE_KEY}
+      COINBASE: \${COINBASE}
+      DATA_DIRECTORY: \${DATA_DIRECTORY}
+      LOG_LEVEL: \${LOG_LEVEL}
+    entrypoint: >
+      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer"
+    volumes:
+      - $DATA_DIR:/data
+EOF
+    print_info "配置文件已更新：镜像版本latest，网络testnet，使用简化entrypoint"
     
     # 5. 拉取最新镜像
     print_info "5/7: 拉取最新镜像..."
