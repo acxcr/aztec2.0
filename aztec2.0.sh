@@ -149,7 +149,11 @@ get_user_input() {
     
     # 获取公共 IP
     print_info "获取公共 IP 地址..."
-    PUBLIC_IP=$(curl -s ifconfig.me || curl -s ipv4.icanhazip.com || echo "127.0.0.1")
+    PUBLIC_IP=$(curl -s --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null || \
+                curl -s --connect-timeout 5 --max-time 10 ipv4.icanhazip.com 2>/dev/null || \
+                curl -s --connect-timeout 5 --max-time 10 ipinfo.io/ip 2>/dev/null || \
+                curl -s --connect-timeout 5 --max-time 10 checkip.amazonaws.com 2>/dev/null || \
+                echo "127.0.0.1")
     print_info "检测到的公共 IP: $PUBLIC_IP"
     
     read -p "请确认公共 IP 地址是否正确 (y/n): " confirm_ip
@@ -188,7 +192,7 @@ services:
   aztec-sequencer:
     container_name: aztec-sequencer
     network_mode: host
-    image: aztecprotocol/aztec:latest
+    image: aztecprotocol/aztec:2.0.2
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -236,12 +240,12 @@ show_firewall_info() {
 pull_latest_image() {
     print_step "拉取最新 Aztec 镜像..."
     
-    print_info "正在拉取 aztecprotocol/aztec:latest..."
-    docker pull aztecprotocol/aztec:latest
+    print_info "正在拉取 aztecprotocol/aztec:2.0.2..."
+    docker pull aztecprotocol/aztec:2.0.2
     
     # 获取镜像信息
     local image_id
-    image_id=$(docker images --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | grep "aztecprotocol/aztec:latest" | head -1 | awk '{print $2}')
+    image_id=$(docker images --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | grep "aztecprotocol/aztec:2.0.2" | head -1 | awk '{print $2}')
     
     print_info "镜像拉取完成，镜像 ID: $image_id"
 }
@@ -252,10 +256,18 @@ start_node() {
     
     cd "$AZTEC_DIR"
     
-    # 停止并删除旧容器（如果存在）
-    print_info "清理旧容器..."
-    docker stop aztec-sequencer 2>/dev/null || true
-    docker rm aztec-sequencer 2>/dev/null || true
+    # 停止并删除容器
+    print_info "停止并删除当前容器..."
+    docker compose down
+    
+    # 删除旧镜像
+    print_info "删除旧镜像..."
+    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
+    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
+    
+    # 清理Docker系统
+    print_info "清理Docker系统..."
+    docker system prune -f --volumes 2>/dev/null || true
     
     # 启动新容器
     print_info "启动新容器..."
@@ -277,8 +289,9 @@ delete_node() {
     print_warning "此操作将删除以下所有内容："
     print_warning "  - Docker 容器"
     print_warning "  - 配置文件"
-    print_warning "  - 数据目录"
-    print_warning "  - 镜像（可选）"
+    print_warning "  - 所有数据目录（包括同步数据）"
+    print_warning "  - 所有Aztec镜像"
+    print_warning "  - 所有相关Docker资源"
     echo
     
     read -p "确认要彻底删除节点吗？此操作不可恢复！(y/N): " confirm_delete
@@ -293,37 +306,45 @@ delete_node() {
     print_info "开始删除节点..."
     
     # 1. 停止并删除容器
-    print_info "停止并删除容器..."
+    print_info "1/6: 停止并删除容器..."
     docker stop aztec-sequencer 2>/dev/null || true
     docker rm aztec-sequencer 2>/dev/null || true
     
-    # 2. 删除配置文件
-    print_info "删除配置文件..."
+    # 2. 删除所有Aztec镜像
+    print_info "2/6: 删除所有Aztec镜像..."
+    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
+    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
+    docker rmi aztecprotocol/aztec:2.0.3 2>/dev/null || true
+    docker images | grep aztec | awk '{print $3}' | xargs docker rmi -f 2>/dev/null || true
+    
+    # 3. 删除配置文件
+    print_info "3/6: 删除配置文件..."
     rm -rf "$AZTEC_DIR" 2>/dev/null || true
     
-    # 3. 删除数据目录
-    print_info "删除数据目录..."
-    rm -rf "$DATA_DIR" 2>/dev/null || true
+    # 4. 删除所有Aztec数据目录
+    print_info "4/6: 删除所有Aztec数据目录..."
+    rm -rf "/root/.aztec" 2>/dev/null || true
+    rm -rf "/root/.aztec-testnet" 2>/dev/null || true
+    rm -rf "/root/.aztec-alpha-testnet" 2>/dev/null || true
     
-    # 4. 询问是否删除镜像
-    read -p "是否删除 Aztec 镜像？(y/N): " delete_image
-    if [[ "$delete_image" == "y" || "$delete_image" == "Y" ]]; then
-        print_info "删除 Aztec 镜像..."
-        docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
-    fi
+    # 5. 清理Docker系统
+    print_info "5/6: 清理Docker系统..."
+    docker system prune -af --volumes 2>/dev/null || true
+    docker builder prune -af 2>/dev/null || true
     
-    # 5. 清理 Docker 系统
-    print_info "清理 Docker 系统..."
-    docker system prune -f
+    # 6. 清理残留文件
+    print_info "6/6: 清理残留文件..."
+    find /root -name "*aztec*" -type d 2>/dev/null | xargs rm -rf 2>/dev/null || true
+    find /root -name "*aztec*" -type f 2>/dev/null | xargs rm -f 2>/dev/null || true
     
-    print_info "节点删除完成！"
+    print_info "✅ 彻底删除完成！"
     print_info "已删除的内容："
     print_info "  - 配置目录: $AZTEC_DIR"
-    print_info "  - 数据目录: $DATA_DIR"
+    print_info "  - 所有数据目录: /root/.aztec/*"
     print_info "  - Docker 容器: aztec-sequencer"
-    if [[ "$delete_image" == "y" || "$delete_image" == "Y" ]]; then
-        print_info "  - Docker 镜像: aztecprotocol/aztec:latest"
-    fi
+    print_info "  - 所有Aztec镜像"
+    print_info "  - 所有相关Docker资源"
+    print_info "  - 所有残留文件"
     
     echo "按任意键返回主菜单..."
     read -n 1
@@ -355,12 +376,17 @@ upgrade_node() {
     cd "$AZTEC_DIR"
     docker compose down
     
-    # 清理旧的容器日志
-    print_info "清理旧的容器日志..."
+    # 删除旧镜像
+    print_info "删除旧镜像..."
+    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
+    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
+    
+    # 清理Docker系统
+    print_info "清理Docker系统..."
     docker system prune -f --volumes 2>/dev/null || true
     
     # 2. 迁移重要文件并询问是否清空同步数据
-    print_info "2/7: 迁移重要文件..."
+    print_info "2/8: 迁移重要文件..."
     
     # 创建新的数据目录
     mkdir -p /root/.aztec/testnet/data
@@ -396,20 +422,15 @@ upgrade_node() {
         print_info "保留同步数据..."
     fi
     
-    # 3. 删除旧镜像
-    print_info "3/7: 删除旧镜像..."
-    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
-    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
-    
-    # 4. 更新配置文件 - 版本迁移
-    print_info "4/7: 更新配置文件..."
+    # 3. 更新配置文件 - 版本迁移
+    print_info "3/8: 更新配置文件..."
     # 重新创建正确的 docker-compose.yml 文件
     cat > docker-compose.yml <<EOF
 services:
   aztec-sequencer:
     container_name: aztec-sequencer
     network_mode: host
-    image: aztecprotocol/aztec:latest
+    image: aztecprotocol/aztec:2.0.2
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -429,30 +450,22 @@ services:
     volumes:
       - $DATA_DIR:/data
 EOF
-    print_info "配置文件已更新：镜像版本latest，网络testnet，使用简化entrypoint"
+    print_info "配置文件已更新：镜像版本2.0.2，网络testnet，使用简化entrypoint"
     
-    # 5. 拉取最新镜像
-    print_info "5/7: 拉取最新镜像..."
-    docker pull aztecprotocol/aztec:latest
+    # 4. 拉取最新镜像
+    print_info "4/8: 拉取最新镜像..."
+    docker pull aztecprotocol/aztec:2.0.2
     
-    # 6. 启动新容器
-    print_info "6/7: 启动新容器..."
+    # 5. 启动新容器
+    print_info "5/8: 启动新容器..."
     docker compose up -d
     
-    # 7. 验证启动
-    print_info "7/7: 验证启动状态..."
+    # 6. 验证启动
+    print_info "6/8: 验证启动状态..."
     sleep 5
     if docker ps -q -f name=aztec-sequencer | grep -q .; then
         print_info "✅ 升级成功！节点已重启到最新版本"
         print_info "网络已从alpha-testnet迁移到testnet"
-        
-        # 8. 清理旧的alpha-testnet目录
-        print_info "8/8: 清理旧的alpha-testnet目录..."
-        if [ -d "/root/.aztec/alpha-testnet" ]; then
-            print_info "删除旧的alpha-testnet目录..."
-            rm -rf /root/.aztec/alpha-testnet
-            print_info "旧目录已清理完成"
-        fi
     else
         print_error "❌ 升级失败，请检查日志"
     fi
@@ -583,15 +596,14 @@ main_menu() {
         echo -e "${OPTION_COLOR}    3. 调整日志级别${RESET}"
         echo -e "${OPTION_COLOR}    4. 升级节点容器${RESET}"
         echo -e "${OPTION_COLOR}    5. 查看节点状态${RESET}"
-        echo -e "${OPTION_COLOR}    6. 重启节点${RESET}"
-        echo -e "${OPTION_COLOR}    7. 彻底删除节点${RESET}"
-        echo -e "${OPTION_COLOR}    8. 退出${RESET}"
+        echo -e "${OPTION_COLOR}    6. 彻底删除节点${RESET}"
+        echo -e "${OPTION_COLOR}    7. 退出${RESET}"
         echo
         echo -e "${SEPARATOR_COLOR}    ────────────────────────────────────────────────${RESET}"
         echo
         echo -e "${HINT_COLOR}    q. 退出脚本${RESET}"
         echo
-        read -p "    请输入选项 [1-8, q]: " choice
+        read -p "    请输入选项 [1-7, q]: " choice
 
         case $choice in
             1)
@@ -622,68 +634,19 @@ main_menu() {
                 check_node_status
                 ;;
             6)
-                restart_node
-                ;;
-            7)
                 delete_node
                 ;;
-            8|q|Q)
+            7|q|Q)
                 print_info "感谢使用，再见！"
                 exit 0
                 ;;
             *)
-                print_info "无效选项，请输入 1-8 或 q。"
+                print_info "无效选项，请输入 1-7 或 q。"
                 echo "按任意键返回主菜单..."
                 read -n 1
                 ;;
         esac
     done
-}
-
-# 重启节点
-restart_node() {
-    print_step "重启 Aztec 节点..."
-    
-    # 检查容器是否存在
-    if ! docker ps -a -q -f name=aztec-sequencer | grep -q .; then
-        print_error "未找到节点容器，请先安装节点"
-        echo "按任意键返回主菜单..."
-        read -n 1
-        return
-    fi
-    
-    # 检查容器是否运行
-    if docker ps -q -f name=aztec-sequencer | grep -q .; then
-        print_info "正在重启节点..."
-        docker restart aztec-sequencer
-        
-        # 等待几秒让容器启动
-        sleep 3
-        
-        # 检查重启是否成功
-        if docker ps -q -f name=aztec-sequencer | grep -q .; then
-            print_info "✅ 节点重启成功！"
-            print_info "节点正在启动中，请稍等片刻后查看状态"
-        else
-            print_error "❌ 节点重启失败，请检查日志"
-        fi
-    else
-        print_info "节点未运行，正在启动..."
-        docker start aztec-sequencer
-        
-        # 等待几秒让容器启动
-        sleep 3
-        
-        # 检查启动是否成功
-        if docker ps -q -f name=aztec-sequencer | grep -q .; then
-            print_info "✅ 节点启动成功！"
-        else
-            print_error "❌ 节点启动失败，请检查日志"
-        fi
-    fi
-    
-    echo "按任意键返回主菜单..."
-    read -n 1
 }
 
 # 查看节点状态
