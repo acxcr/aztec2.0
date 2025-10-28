@@ -182,6 +182,7 @@ VALIDATOR_PRIVATE_KEY=$VALIDATOR_PRIVATE_KEY
 COINBASE=$COINBASE
 DATA_DIRECTORY=/data
 LOG_LEVEL=info
+GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS=0xDCd9DdeAbEF70108cE02576df1eB333c4244C666
 EOF
     chmod 600 "$AZTEC_DIR/.env"
     
@@ -192,7 +193,7 @@ services:
   aztec-sequencer:
     container_name: aztec-sequencer
     network_mode: host
-    image: aztecprotocol/aztec:2.0.2
+    image: aztecprotocol/aztec:2.0.4
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -207,6 +208,7 @@ services:
       COINBASE: \${COINBASE}
       DATA_DIRECTORY: \${DATA_DIRECTORY}
       LOG_LEVEL: \${LOG_LEVEL}
+      GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS: \${GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS}
     entrypoint: >
       sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer"
     volumes:
@@ -240,12 +242,12 @@ show_firewall_info() {
 pull_latest_image() {
     print_step "拉取最新 Aztec 镜像..."
     
-    print_info "正在拉取 aztecprotocol/aztec:2.0.2..."
-    docker pull aztecprotocol/aztec:2.0.2
+    print_info "正在拉取 aztecprotocol/aztec:2.0.4..."
+    docker pull aztecprotocol/aztec:2.0.4
     
     # 获取镜像信息
     local image_id
-    image_id=$(docker images --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | grep "aztecprotocol/aztec:2.0.2" | head -1 | awk '{print $2}')
+    image_id=$(docker images --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | grep "aztecprotocol/aztec:2.0.4" | head -1 | awk '{print $2}')
     
     print_info "镜像拉取完成，镜像 ID: $image_id"
 }
@@ -282,19 +284,22 @@ start_node() {
     fi
 }
 
-# 彻底删除节点 - 清理所有项目数据
+# 轻量删除节点 - 保留配置和P2P身份
 delete_node() {
-    print_step "彻底删除 Aztec 节点..."
+    print_step "轻量删除 Aztec 节点..."
     
-    print_warning "此操作将删除以下所有内容："
-    print_warning "  - Docker 容器"
-    print_warning "  - 配置文件"
-    print_warning "  - 所有数据目录（包括同步数据）"
-    print_warning "  - 所有Aztec镜像"
-    print_warning "  - 所有相关Docker资源"
+    print_warning "此操作将删除以下内容："
+    print_warning "  - Docker 容器和镜像"
+    print_warning "  - 同步数据（archiver, world_state, cache）"
+    print_warning "  - Docker系统缓存"
+    echo
+    print_info "将保留以下内容："
+    print_info "  - 配置文件（.env, docker-compose.yml）"
+    print_info "  - P2P身份文件（节点ID保持不变）"
+    print_info "  - 脚本文件"
     echo
     
-    read -p "确认要彻底删除节点吗？此操作不可恢复！(y/N): " confirm_delete
+    read -p "确认要执行轻量删除吗？(y/N): " confirm_delete
     if [[ "$confirm_delete" != "y" && "$confirm_delete" != "Y" ]]; then
         print_info "操作已取消"
         echo "按任意键返回主菜单..."
@@ -303,48 +308,57 @@ delete_node() {
     fi
     
     echo
-    print_info "开始删除节点..."
+    print_info "开始轻量删除节点..."
     
     # 1. 停止并删除容器
-    print_info "1/6: 停止并删除容器..."
+    print_info "1/5: 停止并删除容器..."
     docker stop aztec-sequencer 2>/dev/null || true
     docker rm aztec-sequencer 2>/dev/null || true
     
     # 2. 删除所有Aztec镜像
-    print_info "2/6: 删除所有Aztec镜像..."
+    print_info "2/5: 删除所有Aztec镜像..."
     docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
     docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
     docker rmi aztecprotocol/aztec:2.0.3 2>/dev/null || true
+    docker rmi aztecprotocol/aztec:2.0.4 2>/dev/null || true
     docker images | grep aztec | awk '{print $3}' | xargs docker rmi -f 2>/dev/null || true
     
-    # 3. 删除配置文件
-    print_info "3/6: 删除配置文件..."
-    rm -rf "$AZTEC_DIR" 2>/dev/null || true
+    # 3. 删除同步数据（保留P2P身份和配置）
+    print_info "3/5: 删除同步数据..."
+    rm -rf "/root/.aztec/testnet/data/archiver" 2>/dev/null || true
+    rm -rf "/root/.aztec/testnet/data/world_state" 2>/dev/null || true  
+    rm -rf "/root/.aztec/testnet/data/cache" 2>/dev/null || true
+    rm -rf "/root/.aztec/testnet/data/sentinel" 2>/dev/null || true
+    rm -rf "/root/.aztec/testnet/data/slasher" 2>/dev/null || true
+    print_info "同步数据已清理，P2P身份文件已保留"
     
-    # 4. 删除所有Aztec数据目录
-    print_info "4/6: 删除所有Aztec数据目录..."
-    rm -rf "/root/.aztec" 2>/dev/null || true
-    rm -rf "/root/.aztec-testnet" 2>/dev/null || true
-    rm -rf "/root/.aztec-alpha-testnet" 2>/dev/null || true
+    # 4. 清理Docker系统
+    print_info "4/5: 清理Docker系统..."
+    docker system prune -f --volumes 2>/dev/null || true
     
-    # 5. 清理Docker系统
-    print_info "5/6: 清理Docker系统..."
-    docker system prune -af --volumes 2>/dev/null || true
-    docker builder prune -af 2>/dev/null || true
+    # 5. 验证保留的文件
+    print_info "5/5: 验证保留的文件..."
+    if [ -f "/root/.aztec/testnet/data/p2p-private-key" ]; then
+        print_info "✅ P2P私钥已保留"
+    fi
+    if [ -f "$AZTEC_DIR/.env" ]; then
+        print_info "✅ 配置文件已保留"  
+    fi
     
-    # 6. 清理残留文件
-    print_info "6/6: 清理残留文件..."
-    find /root -name "*aztec*" -type d 2>/dev/null | xargs rm -rf 2>/dev/null || true
-    find /root -name "*aztec*" -type f 2>/dev/null | xargs rm -f 2>/dev/null || true
-    
-    print_info "✅ 彻底删除完成！"
+    print_info "✅ 轻量删除完成！"
+    echo
     print_info "已删除的内容："
-    print_info "  - 配置目录: $AZTEC_DIR"
-    print_info "  - 所有数据目录: /root/.aztec/*"
     print_info "  - Docker 容器: aztec-sequencer"
-    print_info "  - 所有Aztec镜像"
-    print_info "  - 所有相关Docker资源"
-    print_info "  - 所有残留文件"
+    print_info "  - Aztec镜像: 2.0.2, 2.0.3, 2.0.4"
+    print_info "  - 同步数据: archiver, world_state, cache"
+    print_info "  - Docker系统缓存"
+    echo
+    print_info "✅ 已保留的内容："
+    print_info "  - 配置文件: $AZTEC_DIR/.env, docker-compose.yml"
+    print_info "  - P2P身份: p2p-private-key, p2p/, p2p-peers/"
+    print_info "  - 脚本文件: aztec2.0.sh"
+    echo
+    print_info "📝 现在可以直接选择选项1或4重新部署，配置和节点ID将保持不变"
     
     echo "按任意键返回主菜单..."
     read -n 1
@@ -430,7 +444,7 @@ services:
   aztec-sequencer:
     container_name: aztec-sequencer
     network_mode: host
-    image: aztecprotocol/aztec:2.0.2
+    image: aztecprotocol/aztec:2.0.4
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -445,16 +459,17 @@ services:
       COINBASE: \${COINBASE}
       DATA_DIRECTORY: \${DATA_DIRECTORY}
       LOG_LEVEL: \${LOG_LEVEL}
+      GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS: \${GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS}
     entrypoint: >
       sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer"
     volumes:
       - $DATA_DIR:/data
 EOF
-    print_info "配置文件已更新：镜像版本2.0.2，网络testnet，使用简化entrypoint"
+    print_info "配置文件已更新：镜像版本2.0.4，网络testnet，使用简化entrypoint"
     
     # 4. 拉取最新镜像
     print_info "4/8: 拉取最新镜像..."
-    docker pull aztecprotocol/aztec:2.0.2
+    docker pull aztecprotocol/aztec:2.0.4
     
     # 5. 启动新容器
     print_info "5/8: 启动新容器..."
