@@ -210,7 +210,7 @@ services:
       LOG_LEVEL: \${LOG_LEVEL}
       GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS: \${GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS}
     entrypoint: >
-      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer --snapshots-url https://snapshots.aztec.graphops.xyz/files/"
+      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer --no-snapshot"
     volumes:
       - $DATA_DIR:/data
 EOF
@@ -461,11 +461,11 @@ services:
       LOG_LEVEL: \${LOG_LEVEL}
       GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS: \${GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS}
     entrypoint: >
-      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer --snapshots-url https://snapshots.aztec.graphops.xyz/files/"
+      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer --no-snapshot"
     volumes:
       - $DATA_DIR:/data
 EOF
-    print_info "配置文件已更新：镜像版本2.0.4，网络testnet，使用GraphOps快照源"
+    print_info "配置文件已更新：镜像版本2.0.4，网络testnet，使用简化entrypoint"
     
     # 4. 拉取最新镜像
     print_info "4/8: 拉取最新镜像..."
