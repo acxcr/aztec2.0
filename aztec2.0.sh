@@ -6,9 +6,22 @@
 
 set -euo pipefail
 
-# 配置
+# 基础配置
 AZTEC_DIR="/root/aztec"
 DATA_DIR="/root/.aztec/testnet/data"
+AZTEC_IMAGE_VERSION="2.1.2"
+AZTEC_IMAGE="aztecprotocol/aztec:${AZTEC_IMAGE_VERSION}"
+ROLLUP_CONTRACT="0xebd99ff0ff6677205509ae73f93d0ca52ac85d67"
+STAKE_TOKEN_CONTRACT="0x139d2a7a0881e16332d7D1F8DB383A4507E1Ea7A"
+STAKE_REQUIRED_AMOUNT="200000ether"
+
+# 额外 CLI 路径
+if [ -d "$HOME/.aztec/bin" ]; then
+    export PATH="$HOME/.aztec/bin:$PATH"
+fi
+if [ -d "$HOME/.foundry/bin" ]; then
+    export PATH="$HOME/.foundry/bin:$PATH"
+fi
 
 # 颜色定义
 RED='\033[0;31m'
@@ -22,6 +35,146 @@ print_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
 print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
+
+safe_source() {
+    local file=$1
+    if [ -f "$file" ]; then
+        set +u
+        # shellcheck disable=SC1090
+        source "$file"
+        set -u
+    fi
+}
+
+ensure_command() {
+    local cmd=$1
+    local install_hint=${2:-}
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        print_error "未检测到命令：$cmd"
+        if [ -n "$install_hint" ]; then
+            print_info "安装提示：$install_hint"
+        fi
+        return 1
+    fi
+    return 0
+}
+
+ensure_or_install_jq() {
+    if command -v jq >/dev/null 2>&1; then
+        return 0
+    fi
+
+    print_warning "未检测到 jq。"
+    if command -v apt >/dev/null 2>&1; then
+        read -p "是否现在自动安装 jq？(y/N): " install_jq
+        if [[ "$install_jq" == "y" || "$install_jq" == "Y" ]]; then
+            print_info "开始安装 jq..."
+            if apt-get update && apt-get install -y jq; then
+                print_info "jq 安装完成。"
+                return 0
+            else
+                print_error "自动安装 jq 失败，请手动运行：apt install jq"
+            fi
+        else
+            print_info "已取消自动安装，请手动运行：apt install jq"
+        fi
+    else
+        print_info "无法自动安装 jq，请手动安装：apt install jq"
+    fi
+    return 1
+}
+
+ensure_or_install_aztec_cli() {
+    if command -v aztec >/dev/null 2>&1; then
+        return 0
+    fi
+
+    print_warning "未检测到 Aztec CLI。"
+    read -p "是否立即自动安装 Aztec CLI？(y/N): " install_cli
+    if [[ "$install_cli" == "y" || "$install_cli" == "Y" ]]; then
+        print_warning "安装过程会启动新的登录 Shell，完成后请输入 exit 返回本脚本。"
+        echo
+        print_info "开始安装 Aztec CLI..."
+        if bash -i <(curl -s https://install.aztec.network); then
+            print_info "Aztec CLI 安装完成。"
+            safe_source "$HOME/.bashrc"
+            safe_source "$HOME/.bash_profile"
+            export PATH="$HOME/.aztec/bin:$PATH"
+        else
+            print_error "Aztec CLI 安装失败，请稍后重试或手动安装。"
+        fi
+    else
+        print_info "已取消自动安装，请手动运行：bash -i <(curl -s https://install.aztec.network)"
+    fi
+
+    if command -v aztec >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+ensure_or_install_foundry() {
+    if command -v cast >/dev/null 2>&1 && command -v forge >/dev/null 2>&1; then
+        return 0
+    fi
+
+    print_warning "未检测到 Foundry (cast/forge)。"
+    read -p "是否立即自动安装 Foundry？(y/N): " install_foundry
+    if [[ "$install_foundry" == "y" || "$install_foundry" == "Y" ]]; then
+        print_info "开始安装 Foundry..."
+        if curl -L https://foundry.paradigm.xyz | bash; then
+            print_info "Foundry 安装脚本执行完成，正在初始化..."
+            safe_source "$HOME/.bashrc"
+            safe_source "$HOME/.bash_profile"
+            export PATH="$HOME/.foundry/bin:$PATH"
+            if command -v foundryup >/dev/null 2>&1; then
+                if foundryup; then
+                    print_info "Foundry 初始化完成。"
+                    export PATH="$HOME/.foundry/bin:$PATH"
+                    return 0
+                else
+                    print_error "foundryup 执行失败，请手动运行 foundryup。"
+                fi
+            else
+                print_error "未找到 foundryup，请确认安装脚本是否成功执行。"
+            fi
+        else
+            print_error "Foundry 安装脚本执行失败，请稍后重试或手动安装。"
+        fi
+    else
+        print_info "已取消自动安装，请手动运行：curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup"
+    fi
+
+    if command -v cast >/dev/null 2>&1 && command -v forge >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+update_env_var() {
+    local key=$1
+    local value=$2
+    local file="$AZTEC_DIR/.env"
+
+    if [ ! -f "$file" ]; then
+        mkdir -p "$AZTEC_DIR"
+        touch "$file"
+        print_info "已创建新的环境文件 $file。"
+    fi
+
+    if grep -q "^$key=" "$file"; then
+        sed -i "s|^$key=.*|$key=$value|" "$file"
+    else
+        echo "$key=$value" >> "$file"
+    fi
+}
+
+# 智能加载环境变量（可选，不强制要求）
+if [ -f "$AZTEC_DIR/.env" ]; then
+    print_info "从配置文件加载环境变量..."
+    safe_source "$AZTEC_DIR/.env"
+    print_info "环境变量加载完成"
+fi
 
 # 智能加载环境变量（可选，不强制要求）
 if [ -f "$AZTEC_DIR/.env" ]; then
@@ -74,18 +227,27 @@ install_docker_compose() {
 
 # 获取用户输入
 get_user_input() {
-    print_step "请输入 Aztec 节点配置信息："
+    if [ -f "$AZTEC_DIR/.env" ]; then
+        print_info "检测到现有配置，将加载默认值。"
+        set -a
+        safe_source "$AZTEC_DIR/.env"
+        set +a
+    fi
+
+    print_step "请输入 Aztec 节点配置信息 / Enter Aztec node configuration"
     echo
     
-    # L1 执行客户端 RPC URL
+    local default_eth="${ETHEREUM_HOSTS:-}"
     while true; do
-        echo "L1 执行客户端（EL）RPC URL 说明："
-        echo "  1. 在 https://dashboard.alchemy.com/ 获取 Sepolia 的 RPC (http://xxx)"
-        echo "  2. 在 https://drpc.org/ 获取 Sepolia 的 RPC (http://xxx)"
-        echo
-        read -p "请输入 L1 执行客户端（EL）RPC URL： " ETHEREUM_HOSTS
-        
-        if [[ "$ETHEREUM_HOSTS" =~ ^https?:// ]]; then
+        echo "L1 执行客户端（EL）RPC URL / Execution layer RPC (http/https)"
+        echo "  建议使用 Alchemy、Infura、DRPC 等 Sepolia EL 节点。"
+        print_info "当前默认值：${default_eth:-未配置}"
+        read -p "请输入 EL RPC URL (默认: ${default_eth:-无})：" input
+        if [ -z "$input" ] && [ -n "$default_eth" ]; then
+            ETHEREUM_HOSTS="$default_eth"
+            break
+        elif [[ "$input" =~ ^https?:// ]]; then
+            ETHEREUM_HOSTS="$input"
             break
         else
             print_error "URL 格式无效，必须以 http:// 或 https:// 开头。"
@@ -94,15 +256,17 @@ get_user_input() {
     
     echo
     
-    # L1 共识客户端 RPC URL
+    local default_cl="${L1_CONSENSUS_HOST_URLS:-}"
     while true; do
-        echo "L1 共识（CL）RPC URL 说明："
-        echo "  1. 在 https://drpc.org/ 获取 Beacon Chain Sepolia 的 RPC (http://xxx)"
-        echo "  2. 在 https://www.ankr.com/rpc/ 获取 Beacon Chain Sepolia 的 RPC (http://xxx)"
-        echo
-        read -p "请输入 L1 共识（CL）RPC URL： " L1_CONSENSUS_HOST_URLS
-        
-        if [[ "$L1_CONSENSUS_HOST_URLS" =~ ^https?:// ]]; then
+        echo "L1 共识客户端（CL）RPC URL / Consensus layer Beacon RPC"
+        echo "  建议使用自建 Lighthouse/Prsym 或公共 Beacon RPC。"
+        print_info "当前默认值：${default_cl:-未配置}"
+        read -p "请输入 CL RPC URL (默认: ${default_cl:-无})：" input
+        if [ -z "$input" ] && [ -n "$default_cl" ]; then
+            L1_CONSENSUS_HOST_URLS="$default_cl"
+            break
+        elif [[ "$input" =~ ^https?:// ]]; then
+            L1_CONSENSUS_HOST_URLS="$input"
             break
         else
             print_error "URL 格式无效，必须以 http:// 或 https:// 开头。"
@@ -111,16 +275,18 @@ get_user_input() {
     
     echo
     
-    # 验证者私钥
+    local default_attester="${VALIDATOR_PRIVATE_KEY:-}"
     while true; do
-        echo "验证者私钥说明："
-        echo "  1. 必须是 0x 开头的 64 位十六进制字符串"
-        echo "  2. 该钱包需要持有 Sepolia ETH 用于支付 Gas 费用"
-        echo "  3. 建议使用新创建的钱包，不要使用主网钱包"
-        echo
-        read -p "请输入验证者私钥（0x 开头的 64 位十六进制）： " VALIDATOR_PRIVATE_KEY
-        
-        if [[ "$VALIDATOR_PRIVATE_KEY" =~ ^0x[a-fA-F0-9]{64}$ ]]; then
+        echo "验证者私钥（证明者） / Attester private key"
+        echo "  - 0x 开头的 64 位十六进制字符串"
+        echo "  - 需持有足够 Sepolia ETH 与 STAKE"
+        print_info "当前默认值：${default_attester:-未配置}"
+        read -p "请输入验证者私钥 (默认保留原值): " input
+        if [ -z "$input" ] && [ -n "$default_attester" ]; then
+            VALIDATOR_PRIVATE_KEY="$default_attester"
+            break
+        elif [[ "$input" =~ ^0x[a-fA-F0-9]{64}$ ]]; then
+            VALIDATOR_PRIVATE_KEY="$input"
             break
         else
             print_error "私钥格式无效，必须是 0x 开头的 64 位十六进制。"
@@ -129,16 +295,17 @@ get_user_input() {
     
     echo
     
-    # COINBASE 地址
+    local default_coinbase="${COINBASE:-}"
     while true; do
-        echo "COINBASE 地址说明："
-        echo "  1. 接收区块奖励的以太坊地址"
-        echo "  2. 建议与验证者地址不同，提高安全性"
-        echo "  3. 必须是 0x 开头的 40 位十六进制地址"
-        echo
-        read -p "请输入 COINBASE 地址： " COINBASE
-        
-        if [[ "$COINBASE" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+        echo "奖励地址 / Coinbase address"
+        echo "  - 接收 L2 区块奖励与费用"
+        print_info "当前默认值：${default_coinbase:-未配置}"
+        read -p "请输入 Coinbase 地址 (默认保留原值): " input
+        if [ -z "$input" ] && [ -n "$default_coinbase" ]; then
+            COINBASE="$default_coinbase"
+            break
+        elif [[ "$input" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+            COINBASE="$input"
             break
         else
             print_error "地址格式无效，必须是 0x 开头的 40 位十六进制。"
@@ -147,18 +314,70 @@ get_user_input() {
     
     echo
     
-    # 获取公共 IP
-    print_info "获取公共 IP 地址..."
-    PUBLIC_IP=$(curl -s --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null || \
-                curl -s --connect-timeout 5 --max-time 10 ipv4.icanhazip.com 2>/dev/null || \
-                curl -s --connect-timeout 5 --max-time 10 ipinfo.io/ip 2>/dev/null || \
-                curl -s --connect-timeout 5 --max-time 10 checkip.amazonaws.com 2>/dev/null || \
-                echo "127.0.0.1")
-    print_info "检测到的公共 IP: $PUBLIC_IP"
-    
-    read -p "请确认公共 IP 地址是否正确 (y/n): " confirm_ip
-    if [[ "$confirm_ip" != "y" && "$confirm_ip" != "Y" ]]; then
-        read -p "请输入正确的公共 IP 地址: " PUBLIC_IP
+    local default_withdrawer="${WITHDRAWER_ADDRESS:-$COINBASE}"
+    print_info "当前默认值：${default_withdrawer:-未配置}"
+    read -p "提取地址 / Withdrawer address (默认使用 ${default_withdrawer}): " input
+    if [ -z "$input" ]; then
+        WITHDRAWER_ADDRESS="$default_withdrawer"
+    elif [[ "$input" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+        WITHDRAWER_ADDRESS="$input"
+    else
+        print_warning "输入格式无效，继续使用默认提取地址 $default_withdrawer"
+        WITHDRAWER_ADDRESS="$default_withdrawer"
+    fi
+
+    echo
+
+    local default_bls="${BLS_SECRET_KEY:-}"
+    print_info "当前默认值：${default_bls:-未配置}"
+    read -p "如已拥有 BLS 私钥，请输入（可留空稍后生成） / Existing BLS secret (optional): " input
+    if [ -n "$input" ]; then
+        BLS_SECRET_KEY="$input"
+    else
+        BLS_SECRET_KEY="${default_bls:-}"
+    fi
+
+    echo
+
+    local default_snapshot="${SNAPSHOT_URLS:-}"
+    print_info "当前默认值：${default_snapshot:-未配置}"
+    read -p "如需指定快照源 (SNAPSHOT_URLS)，请输入（可留空，默认从 L1 同步）: " input
+    if [ -n "$input" ]; then
+        SNAPSHOT_URLS="$input"
+    else
+        SNAPSHOT_URLS="${default_snapshot:-}"
+    fi
+
+    echo
+
+    local detected_ip=""
+    local detected_ipv6=""
+    for endpoint in \
+        "https://ipv4.icanhazip.com" \
+        "https://ifconfig.me/ip" \
+        "https://ipinfo.io/ip" \
+        "https://checkip.amazonaws.com"; do
+        resp=$(curl -s --connect-timeout 5 --max-time 10 "$endpoint" 2>/dev/null || echo "")
+        if [[ "$resp" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            detected_ip="$resp"
+            break
+        elif [[ -z "$detected_ipv6" && "$resp" =~ : ]]; then
+            detected_ipv6="$resp"
+        fi
+    done
+    if [ -z "$detected_ip" ]; then
+        detected_ip="$detected_ipv6"
+    fi
+    local default_ip="${P2P_IP:-$detected_ip}"
+    print_info "检测到的公共 IP: ${detected_ip:-未获取}"
+    print_info "当前默认值：${default_ip:-未配置}"
+    read -p "请输入 P2P 公网 IP (默认: ${default_ip:-127.0.0.1}): " input
+    if [ -n "$input" ]; then
+        P2P_IP="$input"
+    elif [ -n "$default_ip" ]; then
+        P2P_IP="$default_ip"
+    else
+        P2P_IP="127.0.0.1"
     fi
     
     echo
@@ -168,32 +387,38 @@ get_user_input() {
 create_config_files() {
     print_step "创建配置文件..."
     
-    # 创建目录
     mkdir -p "$AZTEC_DIR"
     mkdir -p "$DATA_DIR"
     
-    # 创建 .env 文件 - 使用官方环境变量名
+    local bls_value="${BLS_SECRET_KEY:-}"
+    local snapshot_value="${SNAPSHOT_URLS:-}"
+
     print_info "创建 .env 文件..."
     cat > "$AZTEC_DIR/.env" <<EOF
 ETHEREUM_HOSTS=$ETHEREUM_HOSTS
 L1_CONSENSUS_HOST_URLS=$L1_CONSENSUS_HOST_URLS
-P2P_IP=$PUBLIC_IP
+P2P_IP=$P2P_IP
 VALIDATOR_PRIVATE_KEY=$VALIDATOR_PRIVATE_KEY
 COINBASE=$COINBASE
+WITHDRAWER_ADDRESS=$WITHDRAWER_ADDRESS
+BLS_SECRET_KEY=$bls_value
 DATA_DIRECTORY=/data
 LOG_LEVEL=info
 GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS=0xDCd9DdeAbEF70108cE02576df1eB333c4244C666
+ROLLUP_CONTRACT=$ROLLUP_CONTRACT
+STAKE_TOKEN_CONTRACT=$STAKE_TOKEN_CONTRACT
+STAKE_REQUIRED_AMOUNT=$STAKE_REQUIRED_AMOUNT
+SNAPSHOT_URLS=$snapshot_value
 EOF
     chmod 600 "$AZTEC_DIR/.env"
     
-    # 创建 docker-compose.yml 文件 - 严格按照官方资料
     print_info "创建 docker-compose.yml 文件..."
     cat > "$AZTEC_DIR/docker-compose.yml" <<EOF
 services:
   aztec-sequencer:
     container_name: aztec-sequencer
     network_mode: host
-    image: aztecprotocol/aztec:2.0.4
+    image: $AZTEC_IMAGE
     restart: unless-stopped
     logging:
       driver: "json-file"
@@ -206,11 +431,17 @@ services:
       P2P_IP: \${P2P_IP}
       VALIDATOR_PRIVATE_KEY: \${VALIDATOR_PRIVATE_KEY}
       COINBASE: \${COINBASE}
+      WITHDRAWER_ADDRESS: \${WITHDRAWER_ADDRESS}
       DATA_DIRECTORY: \${DATA_DIRECTORY}
       LOG_LEVEL: \${LOG_LEVEL}
       GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS: \${GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS}
+      ROLLUP_CONTRACT: \${ROLLUP_CONTRACT}
+      STAKE_TOKEN_CONTRACT: \${STAKE_TOKEN_CONTRACT}
+      STAKE_REQUIRED_AMOUNT: \${STAKE_REQUIRED_AMOUNT}
     entrypoint: >
-      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer --no-snapshot"
+      sh -c "EXTRA_ARGS=\"\"; \
+             if [ -n \"\${SNAPSHOT_URLS:-}\" ]; then EXTRA_ARGS=\"--snapshots-urls \${SNAPSHOT_URLS}\"; fi; \
+             exec node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer \${EXTRA_ARGS}"
     volumes:
       - $DATA_DIR:/data
 EOF
@@ -241,37 +472,19 @@ show_firewall_info() {
 # 拉取最新镜像
 pull_latest_image() {
     print_step "拉取最新 Aztec 镜像..."
-    
-    print_info "正在拉取 aztecprotocol/aztec:2.0.4..."
-    docker pull aztecprotocol/aztec:2.0.4
-    
-    # 获取镜像信息
+    print_info "正在拉取 $AZTEC_IMAGE..."
+    docker pull "$AZTEC_IMAGE"
     local image_id
-    image_id=$(docker images --format "table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | grep "aztecprotocol/aztec:2.0.4" | head -1 | awk '{print $2}')
-    
-    print_info "镜像拉取完成，镜像 ID: $image_id"
+    image_id=$(docker images --format "{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | grep "$AZTEC_IMAGE" | head -1 | awk '{print $2}')
+    [ -n "$image_id" ] && print_info "镜像拉取完成，镜像 ID: $image_id"
 }
 
 # 启动节点
 start_node() {
     print_step "启动 Aztec 节点..."
-    
     cd "$AZTEC_DIR"
-    
-    # 停止并删除容器
-    print_info "停止并删除当前容器..."
+    print_info "停止当前容器（如有）..."
     docker compose down
-    
-    # 删除旧镜像
-    print_info "删除旧镜像..."
-    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
-    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
-    
-    # 清理Docker系统
-    print_info "清理Docker系统..."
-    docker system prune -f --volumes 2>/dev/null || true
-    
-    # 启动新容器
     print_info "启动新容器..."
     if docker compose up -d; then
         print_info "Aztec 节点启动成功！"
@@ -316,12 +529,8 @@ delete_node() {
     docker rm aztec-sequencer 2>/dev/null || true
     
     # 2. 删除所有Aztec镜像
-    print_info "2/5: 删除所有Aztec镜像..."
-    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
-    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
-    docker rmi aztecprotocol/aztec:2.0.3 2>/dev/null || true
-    docker rmi aztecprotocol/aztec:2.0.4 2>/dev/null || true
-    docker images | grep aztec | awk '{print $3}' | xargs docker rmi -f 2>/dev/null || true
+    print_info "2/5: 删除所有 Aztec 镜像..."
+    docker images --format "{{.Repository}} {{.ID}}" | awk '/aztecprotocol\/aztec/{print $2}' | xargs -r docker rmi -f 2>/dev/null || true
     
     # 3. 删除同步数据（保留P2P身份和配置）
     print_info "3/5: 删除同步数据..."
@@ -349,7 +558,7 @@ delete_node() {
     echo
     print_info "已删除的内容："
     print_info "  - Docker 容器: aztec-sequencer"
-    print_info "  - Aztec镜像: 2.0.2, 2.0.3, 2.0.4"
+    print_info "  - Aztec 镜像 (aztecprotocol/aztec:*)"
     print_info "  - 同步数据: archiver, world_state, cache"
     print_info "  - Docker系统缓存"
     echo
@@ -364,125 +573,404 @@ delete_node() {
     read -n 1
 }
 
+generate_bls_secret_key() {
+    ensure_command "aztec" "请先安装 Aztec CLI：bash -i <(curl -s https://install.aztec.network)"
+    ensure_command "jq" "请运行 apt install jq"
+    ensure_command "cast" "请先安装 Foundry：curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup"
+
+    local bls_dir="$AZTEC_DIR/bls_keys"
+    mkdir -p "$bls_dir"
+    local timestamp
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    local raw_file="$bls_dir/${timestamp}_raw.txt"
+    local json_file="$bls_dir/${timestamp}.json"
+    local latest_raw="$bls_dir/last_output_raw.txt"
+    local latest_json="$bls_dir/last_output.json"
+
+    print_info "正在使用 aztec CLI 生成临时密钥..."
+    local cmd_output
+    if ! cmd_output=$(aztec validator-keys new \
+        --json \
+        --fee-recipient 0x0000000000000000000000000000000000000000000000000000000000000000 2>&1 | tee "$raw_file"); then
+        print_error "调用 aztec validator-keys new 失败，请检查 CLI 安装及网络。"
+        echo "$cmd_output"
+        return 1
+    fi
+
+    local cmd_clean
+    cmd_clean=$(printf '%s\n' "$cmd_output" | tr -d '\r')
+    printf '%s\n' "$cmd_clean" > "$raw_file"
+    cp "$raw_file" "$latest_raw" >/dev/null 2>&1 || ln -sf "$raw_file" "$latest_raw"
+
+    local json_payload
+    json_payload=$(printf '%s\n' "$cmd_clean" | sed '/^acc1:/,$d' | sed '/^[[:space:]]*$/d')
+    if [ -n "$json_payload" ]; then
+        printf '%s\n' "$json_payload" > "$json_file"
+        cp "$json_file" "$latest_json" >/dev/null 2>&1 || ln -sf "$json_file" "$latest_json"
+    fi
+
+    local attester_eth=""
+    local attester_bls=""
+    local attester_address=""
+    if [ -s "$json_file" ]; then
+        attester_eth=$(jq -r '.validators[0].attester.eth // empty' "$json_file" 2>/dev/null || echo "")
+        attester_bls=$(jq -r '.validators[0].attester.bls // empty' "$json_file" 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$attester_bls" || "$attester_bls" == "null" ]]; then
+        attester_bls=$(printf '%s\n' "$cmd_clean" | awk '/bls:/ {gsub(/.*bls:[[:space:]]*/, ""); print; exit}' | tr -d '"' | xargs)
+    fi
+
+    if [ -n "$attester_eth" ]; then
+        attester_address=$(cast wallet address "$attester_eth" 2>/dev/null || echo "")
+    fi
+
+    if [[ -z "$attester_bls" || "$attester_bls" == "null" ]]; then
+        print_error "未能解析到 BLS 私钥，请手动执行 aztec validator-keys new 并记录输出。"
+        cat "$raw_file"
+        return 1
+    fi
+
+    print_info "原始输出已保存：$latest_raw"
+    [ -s "$json_file" ] && print_info "JSON 结果已保存：$latest_json"
+    if [ -n "$attester_eth" ]; then
+        print_info "新的以太坊私钥 (attester.eth)：$attester_eth"
+    fi
+    if [ -n "$attester_address" ]; then
+        print_info "新的以太坊地址：$attester_address"
+    fi
+    print_info "新的 BLS 私钥 (attester.bls)：$attester_bls"
+    if [ -n "$attester_address" ]; then
+        print_warning "请向上述新地址转入 0.2 - 0.5 Sepolia ETH 后再继续注册。"
+    fi
+
+    echo "$attester_eth|$attester_bls|$attester_address"
+    return 0
+}
+
+register_validator() {
+    print_step "通过 CLI 注册序列器 / CLI Register Sequencer"
+
+    local has_env=false
+    if [ -f "$AZTEC_DIR/.env" ]; then
+        has_env=true
+        set -a
+        safe_source "$AZTEC_DIR/.env"
+        set +a
+        print_info "已从 $AZTEC_DIR/.env 读取默认参数，如需覆盖可手动输入。"
+    else
+        print_warning "未找到 $AZTEC_DIR/.env，将通过交互方式填写所需配置。"
+    fi
+
+    ensure_or_install_aztec_cli
+    if ! ensure_command "aztec" "请先安装 Aztec CLI：bash -i <(curl -s https://install.aztec.network)"; then
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+    
+    ensure_or_install_foundry
+    if ! ensure_command "cast" "请先安装 Foundry：curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup"; then
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+    
+    ensure_or_install_jq
+    if ! ensure_command "jq" "请运行 apt install jq"; then
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    local old_priv="${VALIDATOR_PRIVATE_KEY:-}"
+    if [ -z "$old_priv" ]; then
+        print_warning "注意：此处输入的旧私钥将直接回显，请确认环境安全。"
+        read -rp "请输入旧验证者私钥（Attester Private Key，当前节点正在使用的旧地址私钥）： " old_priv
+    fi
+    old_priv=$(echo "$old_priv" | xargs)
+
+    local default_rpc=""
+    if [ -n "${ETHEREUM_HOSTS:-}" ]; then
+        default_rpc=$(echo "$ETHEREUM_HOSTS" | cut -d',' -f1 | xargs)
+    fi
+    read -p "请输入 L1 执行层 RPC（Execution Layer RPC，留空使用 ${default_rpc:-需手动输入}）： " rpc_url
+    if [ -z "$rpc_url" ]; then
+        rpc_url="$default_rpc"
+    fi
+    if [ -z "$rpc_url" ]; then
+        read -p "请再次输入 L1 执行层 RPC（不可为空）： " rpc_url
+        if [ -z "$rpc_url" ]; then
+            print_error "未提供 L1 RPC 地址，无法继续。"
+            echo "按任意键返回主菜单..."
+            read -n 1
+            return
+        fi
+    fi
+
+    local old_address
+    old_address=$(cast wallet address "$old_priv" 2>/dev/null || echo "")
+    if [ -z "$old_address" ]; then
+        while true; do
+            read -p "请输入旧节点的证明者地址（Attester Address，旧地址，0x 开头的 40 位十六进制）： " old_address
+            if [[ "$old_address" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+                break
+            else
+                print_error "地址格式无效，请重新输入。"
+            fi
+        done
+    else
+        print_info "使用旧证明者地址：$old_address"
+    fi
+
+    local new_eth_priv=""
+    local new_bls_priv="${BLS_SECRET_KEY:-}"
+    local new_address=""
+
+    read -p "请输入新的验证者以太坊私钥（留空表示自动生成）： " new_eth_priv
+    new_eth_priv=$(echo "$new_eth_priv" | xargs)
+
+    read -p "请输入新的 BLS 私钥（留空表示自动生成）： " manual_bls
+    manual_bls=$(echo "$manual_bls" | xargs)
+    if [ -n "$manual_bls" ]; then
+        new_bls_priv="$manual_bls"
+    fi
+
+    if [ -z "$new_eth_priv" ] || [ -z "$new_bls_priv" ]; then
+        local generated_output
+        generated_output=$(generate_bls_secret_key) || {
+            print_error "生成密钥失败，请手动生成后重试。"
+            echo "按任意键返回主菜单..."
+            read -n 1
+            return
+        }
+        local generated_line
+        generated_line=$(printf '%s\n' "$generated_output" | tail -n 1)
+        new_eth_priv=$(printf '%s' "$generated_line" | cut -d'|' -f1 | xargs)
+        new_bls_priv=$(printf '%s' "$generated_line" | cut -d'|' -f2 | xargs)
+        new_address=$(printf '%s' "$generated_line" | cut -d'|' -f3 | xargs)
+    else
+        if [ -n "$new_eth_priv" ]; then
+            new_address=$(cast wallet address "$new_eth_priv" 2>/dev/null || echo "")
+        fi
+        if [ -z "$new_bls_priv" ]; then
+            print_error "BLS 私钥为空，请重新运行。"
+            echo "按任意键返回主菜单..."
+            read -n 1
+            return
+        fi
+    fi
+
+    if [ -z "$new_eth_priv" ]; then
+        print_error "未能确定新的以太坊私钥，请重新运行。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    if [ -z "$new_address" ]; then
+        new_address=$(cast wallet address "$new_eth_priv" 2>/dev/null || echo "")
+    fi
+    if [ -z "$new_address" ]; then
+        print_error "未能根据新的以太坊私钥推导出地址，请检查输入。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    new_bls_priv=$(echo "$new_bls_priv" | xargs)
+    if [ -z "$new_bls_priv" ]; then
+        print_error "BLS 私钥生成失败，请手动执行 aztec validator-keys new 并重试。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+    if [[ ! "$new_bls_priv" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        print_error "BLS 私钥格式无效，必须是 0x 开头的十六进制字符串。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    print_info "新的以太坊私钥 (attester.eth)：$new_eth_priv"
+    print_info "新的 BLS 私钥 (attester.bls)：$new_bls_priv"
+    print_info "新的验证者地址：$new_address"
+    if [ -n "$new_address" ]; then
+        print_warning "请确保已向 $new_address 转入 0.2 - 0.5 Sepolia ETH（覆盖注册与 Gas 成本）。"
+    fi
+
+    local withdrawer="${WITHDRAWER_ADDRESS:-${COINBASE:-}}"
+    if [ -z "$withdrawer" ]; then
+        read -p "是否使用新地址 $new_address 作为提取地址？(Y/n): " withdrawer_use_new
+        if [[ "$withdrawer_use_new" =~ ^[nN]$ ]]; then
+            read -p "请输入提取地址（0x 开头的 40 位十六进制）： " withdrawer
+            withdrawer=$(echo "$withdrawer" | xargs)
+        else
+            withdrawer="$new_address"
+        fi
+    else
+        read -p "当前提取地址为 $withdrawer，是否保持不变？(Y/n): " withdrawer_choice
+        if [[ "$withdrawer_choice" =~ ^[nN]$ ]]; then
+            read -p "请输入新的提取地址（0x 开头的 40 位十六进制，可留空使用 $new_address）： " withdrawer
+            withdrawer=$(echo "$withdrawer" | xargs)
+            if [ -z "$withdrawer" ]; then
+                withdrawer="$new_address"
+            fi
+        fi
+    fi
+    while [[ -z "$withdrawer" || ! "$withdrawer" =~ ^0x[a-fA-F0-9]{40}$ ]]; do
+        print_error "地址格式无效，请重新输入。"
+        read -p "请输入提取地址（0x 开头的 40 位十六进制）： " withdrawer
+        withdrawer=$(echo "$withdrawer" | xargs)
+    done
+
+    print_info "选择的提取地址：$withdrawer"
+
+    if [ -n "$new_address" ]; then
+        read -p "确认资金已到位后按 Enter 继续..." _
+    fi
+    
+    echo
+    print_info "旧验证者地址：$old_address"
+    print_info "新验证者地址：$new_address"
+    print_warning "请确保证明者旧地址 $old_address 已持有 200000 STAKE（保持质押状态），同时新地址 $new_address 拥有足够的 Sepolia ETH 支付注册 Gas。"
+    read -p "确认继续执行授权与注册操作吗？(y/N): " confirm_all
+    if [[ "$confirm_all" != "y" && "$confirm_all" != "Y" ]]; then
+        print_info "操作已取消。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    echo
+    print_info "执行 STAKE 授权..."
+    if ! cast send "$STAKE_TOKEN_CONTRACT" "approve(address,uint256)" "$ROLLUP_CONTRACT" "$STAKE_REQUIRED_AMOUNT" --private-key "$old_priv" --rpc-url "$rpc_url"; then
+        print_error "授权交易失败，请检查账户余额与 RPC 配置。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    echo
+    print_info "提交注册交易..."
+    if ! aztec add-l1-validator \
+        --l1-rpc-urls "$rpc_url" \
+        --network testnet \
+        --private-key "$old_priv" \
+        --attester "$new_address" \
+        --withdrawer "$withdrawer" \
+        --bls-secret-key "$new_bls_priv" \
+        --rollup "$ROLLUP_CONTRACT"; then
+        print_error "注册命令执行失败，请检查 CLI 输出。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    update_env_var "WITHDRAWER_ADDRESS" "$withdrawer"
+    update_env_var "BLS_SECRET_KEY" "$new_bls_priv"
+    update_env_var "VALIDATOR_PRIVATE_KEY" "$new_eth_priv"
+
+    print_info "✅ 序列器已成功注册，环境变量已更新。"
+    echo "按任意键返回主菜单..."
+    read -n 1
+}
+
+reload_p2p_identity() {
+    print_step "重新加载 P2P 身份 / Reload P2P Identity"
+
+    if [ ! -f "$AZTEC_DIR/docker-compose.yml" ]; then
+        print_error "未找到 docker-compose.yml，请先安装节点。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    if [ ! -f "$DATA_DIR/p2p-private-key" ]; then
+        print_error "未检测到 $DATA_DIR/p2p-private-key，请先替换 P2P 身份文件。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    read -p "确认已经完成身份文件替换，是否重启容器生效？(y/N): " confirm_reload
+    if [[ "$confirm_reload" != "y" && "$confirm_reload" != "Y" ]]; then
+        print_info "操作已取消。"
+        echo "按任意键返回主菜单..."
+        read -n 1
+        return
+    fi
+
+    cd "$AZTEC_DIR"
+    print_info "停止容器..."
+    docker compose down
+    print_info "重新启动容器..."
+    if docker compose up -d; then
+        sleep 3
+        local new_peer
+        new_peer=$(docker logs aztec-sequencer 2>&1 | grep -i '"peerId"' | tail -1 | sed -n 's/.*"peerId":"\([^"]*\)".*/\1/p')
+        if [ -n "$new_peer" ]; then
+            print_info "新的节点 ID: $new_peer"
+        else
+            print_warning "未能立即获取新的节点 ID，可稍后通过选项 5 查看。"
+        fi
+        print_info "P2P 身份已重新加载。"
+    else
+        print_error "容器启动失败，请检查 docker compose 输出。"
+    fi
+
+    echo "按任意键返回主菜单..."
+    read -n 1
+}
+
 # 升级节点容器
 upgrade_node() {
     print_step "升级节点容器..."
-    
+
     if [ ! -f "$AZTEC_DIR/docker-compose.yml" ]; then
-        print_error "未找到配置文件，请先安装节点"
+        print_error "未找到配置文件，请先安装节点。"
         echo "按任意键返回主菜单..."
         read -n 1
         return
     fi
-    
-    # 检查容器是否存在（运行或停止都可以升级）
+
     if ! docker ps -a -q -f name=aztec-sequencer | grep -q .; then
-        print_error "未找到节点容器，请先安装节点"
+        print_error "未检测到现有容器，请先安装并启动节点。"
         echo "按任意键返回主菜单..."
         read -n 1
         return
     fi
-    
-    print_info "开始升级流程（包含版本迁移）..."
-    
-    # 1. 停止并删除容器
-    print_info "1/7: 停止并删除当前容器..."
+
     cd "$AZTEC_DIR"
+    print_info "1/4: 停止容器..."
     docker compose down
-    
-    # 删除旧镜像
-    print_info "删除旧镜像..."
-    docker rmi aztecprotocol/aztec:latest 2>/dev/null || true
-    docker rmi aztecprotocol/aztec:2.0.2 2>/dev/null || true
-    
-    # 清理Docker系统
-    print_info "清理Docker系统..."
-    docker system prune -f --volumes 2>/dev/null || true
-    
-    # 2. 迁移重要文件并询问是否清空同步数据
-    print_info "2/8: 迁移重要文件..."
-    
-    # 创建新的数据目录
-    mkdir -p /root/.aztec/testnet/data
-    
-    # 迁移重要的身份文件（如果存在）
-    if [ -d "/root/.aztec/alpha-testnet/data" ]; then
-        print_info "迁移节点身份文件..."
-        # 迁移P2P相关文件
-        [ -f "/root/.aztec/alpha-testnet/data/p2p-private-key" ] && cp /root/.aztec/alpha-testnet/data/p2p-private-key /root/.aztec/testnet/data/ 2>/dev/null || true
-        [ -d "/root/.aztec/alpha-testnet/data/p2p" ] && cp -r /root/.aztec/alpha-testnet/data/p2p /root/.aztec/testnet/data/ 2>/dev/null || true
-        [ -d "/root/.aztec/alpha-testnet/data/p2p-archive" ] && cp -r /root/.aztec/alpha-testnet/data/p2p-archive /root/.aztec/testnet/data/ 2>/dev/null || true
-        [ -d "/root/.aztec/alpha-testnet/data/p2p-peers" ] && cp -r /root/.aztec/alpha-testnet/data/p2p-peers /root/.aztec/testnet/data/ 2>/dev/null || true
-        [ -d "/root/.aztec/alpha-testnet/data/sentinel" ] && cp -r /root/.aztec/alpha-testnet/data/sentinel /root/.aztec/testnet/data/ 2>/dev/null || true
-        [ -d "/root/.aztec/alpha-testnet/data/slasher" ] && cp -r /root/.aztec/alpha-testnet/data/slasher /root/.aztec/testnet/data/ 2>/dev/null || true
-        print_info "节点身份文件迁移完成"
-    fi
-    
+
     echo
-    print_warning "升级选项："
-    print_info "1. 保留同步数据（推荐）"
-    print_info "2. 清空同步数据（重新同步）"
-    echo
-    read -p "请选择 (1/2): " data_choice
-    
-    if [[ "$data_choice" == "2" ]]; then
-        print_info "清空同步数据（保留节点身份）..."
-        # 只删除同步数据，保留P2P身份文件
-        rm -rf /root/.aztec/testnet/data/archiver 2>/dev/null || true
-        rm -rf /root/.aztec/testnet/data/world_state 2>/dev/null || true
-        rm -rf /root/.aztec/testnet/data/cache 2>/dev/null || true
-        print_info "同步数据已清空，节点身份已保留"
+    print_warning "是否需要清空同步数据？"
+    print_info "  y: 清空 archiver/world_state/cache 等数据（重新同步）"
+    print_info "  n: 保留现有同步进度（推荐）"
+    read -p "是否清空同步数据？(y/N): " wipe_choice
+    if [[ "$wipe_choice" == "y" || "$wipe_choice" == "Y" ]]; then
+        print_info "清空同步数据..."
+        rm -rf "$DATA_DIR/archiver" "$DATA_DIR/world_state" "$DATA_DIR/cache" \
+               "$DATA_DIR/sentinel" "$DATA_DIR/slasher" "$DATA_DIR/l1-tx-utils" 2>/dev/null || true
+        print_info "同步数据已清理，P2P 身份与配置已保留。"
     else
-        print_info "保留同步数据..."
+        print_info "保留现有同步数据。"
     fi
-    
-    # 3. 更新配置文件 - 版本迁移
-    print_info "3/8: 更新配置文件..."
-    # 重新创建正确的 docker-compose.yml 文件
-    cat > docker-compose.yml <<EOF
-services:
-  aztec-sequencer:
-    container_name: aztec-sequencer
-    network_mode: host
-    image: aztecprotocol/aztec:2.0.4
-    restart: unless-stopped
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "3"
-    environment:
-      ETHEREUM_HOSTS: \${ETHEREUM_HOSTS}
-      L1_CONSENSUS_HOST_URLS: \${L1_CONSENSUS_HOST_URLS}
-      P2P_IP: \${P2P_IP}
-      VALIDATOR_PRIVATE_KEY: \${VALIDATOR_PRIVATE_KEY}
-      COINBASE: \${COINBASE}
-      DATA_DIRECTORY: \${DATA_DIRECTORY}
-      LOG_LEVEL: \${LOG_LEVEL}
-      GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS: \${GOVERNANCE_PROPOSER_PAYLOAD_ADDRESS}
-    entrypoint: >
-      sh -c "node --no-warnings /usr/src/yarn-project/aztec/dest/bin/index.js start --network testnet --node --archiver --sequencer --no-snapshot"
-    volumes:
-      - $DATA_DIR:/data
-EOF
-    print_info "配置文件已更新：镜像版本2.0.4，网络testnet，使用简化entrypoint"
-    
-    # 4. 拉取最新镜像
-    print_info "4/8: 拉取最新镜像..."
-    docker pull aztecprotocol/aztec:2.0.4
-    
-    # 5. 启动新容器
-    print_info "5/8: 启动新容器..."
+
+    print_info "2/4: 拉取最新镜像 $AZTEC_IMAGE..."
+    docker pull "$AZTEC_IMAGE"
+
+    print_info "3/4: 启动新容器..."
     docker compose up -d
     
-    # 6. 验证启动
-    print_info "6/8: 验证启动状态..."
+    print_info "4/4: 验证启动状态..."
     sleep 5
     if docker ps -q -f name=aztec-sequencer | grep -q .; then
-        print_info "✅ 升级成功！节点已重启到最新版本"
-        print_info "网络已从alpha-testnet迁移到testnet"
+        print_info "✅ 升级完成！节点已运行在版本 $AZTEC_IMAGE_VERSION"
     else
-        print_error "❌ 升级失败，请检查日志"
+        print_error "❌ 升级后容器未运行，请检查 docker logs aztec-sequencer"
     fi
     
     echo "按任意键返回主菜单..."
@@ -573,6 +1061,7 @@ install_and_start_node() {
     print_info "  - 查看日志：docker logs -f aztec-sequencer"
     print_info "  - 配置目录：$AZTEC_DIR"
     print_info "  - 数据目录：$DATA_DIR"
+    print_info "  - CLI 注册：可通过菜单选项 7 完成序列器注册"
     echo
     print_warning "重要提醒：请确保防火墙已开放必要端口！"
     print_info "  - 22/tcp   (SSH 访问)"
@@ -612,13 +1101,15 @@ main_menu() {
         echo -e "${OPTION_COLOR}    4. 升级节点容器${RESET}"
         echo -e "${OPTION_COLOR}    5. 查看节点状态${RESET}"
         echo -e "${OPTION_COLOR}    6. 彻底删除节点${RESET}"
-        echo -e "${OPTION_COLOR}    7. 退出${RESET}"
+        echo -e "${OPTION_COLOR}    7. CLI 注册序列器 / CLI Register Sequencer${RESET}"
+        echo -e "${OPTION_COLOR}    8. 重新加载 P2P 身份 / Reload P2P Identity${RESET}"
+        echo -e "${OPTION_COLOR}    9. 退出 / Exit${RESET}"
         echo
         echo -e "${SEPARATOR_COLOR}    ────────────────────────────────────────────────${RESET}"
         echo
         echo -e "${HINT_COLOR}    q. 退出脚本${RESET}"
         echo
-        read -p "    请输入选项 [1-7, q]: " choice
+        read -p "    请输入选项 [1-9, q]: " choice
 
         case $choice in
             1)
@@ -651,12 +1142,18 @@ main_menu() {
             6)
                 delete_node
                 ;;
-            7|q|Q)
+            7)
+                register_validator
+                ;;
+            8)
+                reload_p2p_identity
+                ;;
+            9|q|Q)
                 print_info "感谢使用，再见！"
                 exit 0
                 ;;
             *)
-                print_info "无效选项，请输入 1-7 或 q。"
+                print_info "无效选项，请输入 1-9 或 q。"
                 echo "按任意键返回主菜单..."
                 read -n 1
                 ;;
@@ -686,6 +1183,9 @@ check_node_status() {
     local current_block
     local latest_block
     
+    if ! command -v jq >/dev/null 2>&1; then
+        print_warning "未检测到 jq，无法解析节点高度。请运行 apt install jq 后重试。"
+    else
     current_block=$(curl -s -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"node_getL2Tips","params":[],"id":1}' http://localhost:8080 | jq -r ".result.proven.number" 2>/dev/null || echo "")
     latest_block=$(curl -s -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"node_getL2Tips","params":[],"id":1}' http://localhost:8080 | jq -r ".result.latest.number" 2>/dev/null || echo "")
     
@@ -704,6 +1204,7 @@ check_node_status() {
         fi
     else
         echo "2. 同步状态: ❌ 异常"
+        fi
     fi
     
     # 3. P2P网络连接数
