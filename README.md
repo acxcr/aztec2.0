@@ -15,3 +15,7 @@ wget -O auto-setup-sepolia.sh https://raw.githubusercontent.com/acxcr/aztec2.0/m
   && chmod +x auto-setup-sepolia.sh \
   && ./auto-setup-sepolia.sh
 
+
+  执行层http://IP:8545
+  共识层http://IP:5052
+
