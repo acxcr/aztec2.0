@@ -8,3 +8,10 @@
 
     
 wget -O aztec2.0.sh https://raw.githubusercontent.com/acxcr/aztec2.0/refs/heads/main/aztec2.0.sh && sed -i 's/\r$//' aztec2.0.sh && chmod +x aztec2.0.sh && ./aztec2.0.sh  
+
+RPC借鉴社区脚本升级了版本 
+wget -O auto-setup-sepolia.sh https://raw.githubusercontent.com/acxcr/aztec2.0/main/auto-setup-sepolia.sh \
+  && sed -i 's/\r$//' auto-setup-sepolia.sh \
+  && chmod +x auto-setup-sepolia.sh \
+  && ./auto-setup-sepolia.sh
+
