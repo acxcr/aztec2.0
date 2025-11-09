@@ -12,6 +12,101 @@ GETH_DIR="$DATA_DIR/geth"
 JWT_FILE="$DATA_DIR/jwt.hex"
 COMPOSE_FILE="$DATA_DIR/docker-compose.yml"
 
+# === CLEANUP FUNCTION ===
+cleanup_all() {
+  echo ">>> 正在停止并删除容器..."
+  docker rm -f lighthouse prysm geth 2>/dev/null || true
+
+  echo ">>> 正在删除相关镜像 (若不存在请忽略报错)..."
+  docker rmi -f ethereum/client-go:v1.16.5 sigp/lighthouse:v8.0.0 sigp/lighthouse:v8.0.0-rc.2 gcr.io/prysmaticlabs/prysm/beacon-chain:v6.1.2 2>/dev/null || true
+
+  echo ">>> 正在清理数据目录..."
+  rm -rf "$GETH_DIR" "$DATA_DIR/lighthouse" "$DATA_DIR/prysm"
+  rm -f "$JWT_FILE" "$COMPOSE_FILE"
+  rmdir "$DATA_DIR" 2>/dev/null || true
+
+  echo ">>> 清理完成，脚本文件已保留。"
+}
+
+show_sync_status() {
+  echo "============ 执行层（Geth）============"
+  if ! docker ps --format '{{.Names}}' | grep -q '^geth$'; then
+    echo "状态: 未运行"
+  else
+    sync_result=$(curl -s -X POST http://localhost:8545 \
+      -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}')
+    if [ -z "$sync_result" ]; then
+      echo "状态: 无法访问 RPC（请检查 8545 端口）"
+    elif echo "$sync_result" | jq -e '.result == false' >/dev/null 2>&1; then
+      echo "状态: 已同步 ✅"
+    elif echo "$sync_result" | jq -e '.result.currentBlock' >/dev/null 2>&1; then
+      current_block=$(echo "$sync_result" | jq -r '.result.currentBlock')
+      highest_block=$(echo "$sync_result" | jq -r '.result.highestBlock')
+      echo "状态: 正在同步 🔄"
+      echo "当前区块: $current_block"
+      echo "目标区块: $highest_block"
+    else
+      echo "状态: 正在同步（详细信息获取失败）"
+    fi
+  fi
+
+  echo ""
+  echo "============ 共识层（Lighthouse）============"
+  if ! docker ps --format '{{.Names}}' | grep -q '^lighthouse$'; then
+    echo "状态: 未运行"
+  else
+    beacon_result=$(curl -s http://localhost:5052/eth/v1/node/syncing)
+    if [ -z "$beacon_result" ]; then
+      echo "状态: 无法访问 Beacon API（请检查 5052 端口）"
+    elif echo "$beacon_result" | jq -e '.data.is_syncing == false' >/dev/null 2>&1; then
+      head_slot=$(echo "$beacon_result" | jq -r '.data.head_slot // "0"')
+      echo "状态: 已同步 ✅"
+      echo "当前 Slot: $head_slot"
+    else
+      current_slot=$(echo "$beacon_result" | jq -r '.data.current_slot // "0"')
+      head_slot=$(echo "$beacon_result" | jq -r '.data.head_slot // "0"')
+      echo "状态: 正在同步 🔄"
+      echo "当前 Slot: $current_slot"
+      echo "目标 Slot: $head_slot"
+      if [ "$head_slot" != "0" ] && [ "$head_slot" != "null" ]; then
+        progress=$(( current_slot * 100 / head_slot ))
+        echo "同步进度: ${progress}%"
+      fi
+    fi
+  fi
+}
+
+# === ACTION SELECTION ===
+echo ">>> 请选择操作:"
+echo "1) 部署 Sepolia 节点（Geth + Lighthouse）"
+echo "2) 退出"
+echo "3) 清理所有节点容器与数据 (保留脚本)"
+echo "4) 查看同步进度"
+read -rp "请输入选项 [1-4]: " ACTION_CHOICE
+
+case "$ACTION_CHOICE" in
+  1|"")
+    echo ">>> 开始部署/升级..."
+    ;;
+  3)
+    cleanup_all
+    exit 0
+    ;;
+  4)
+    show_sync_status
+    exit 0
+    ;;
+  2)
+    echo ">>> 已退出。"
+    exit 0
+    ;;
+  *)
+    echo "❌ 无效选项，程序结束。"
+    exit 1
+    ;;
+esac
+
 # Check if node is already running and get current beacon client
 CURRENT_BEACON=""
 if [ -f "$COMPOSE_FILE" ]; then
@@ -22,63 +117,32 @@ if [ -f "$COMPOSE_FILE" ]; then
     fi
 fi
 
-# === CHOOSE BEACON CLIENT ===
-echo ">>> Choose beacon client to use:"
-echo "1) Prysm"
-echo "2) Lighthouse"
-if [ ! -z "$CURRENT_BEACON" ]; then
-    echo -e "\nCurrent beacon client: $CURRENT_BEACON"
-fi
-read -rp "Enter choice [1 or 2]: " BEACON_CHOICE
+# === TARGET CLIENT ===
+NEW_BEACON="lighthouse"
+BEACON_VOLUME="$DATA_DIR/lighthouse"
 
-if [[ "$BEACON_CHOICE" != "1" && "$BEACON_CHOICE" != "2" ]]; then
-  echo "❌ Invalid choice. Exiting."
-  exit 1
-fi
-
-# Set new beacon client
-if [ "$BEACON_CHOICE" = "1" ]; then
-  NEW_BEACON="prysm"
-  BEACON_VOLUME="$DATA_DIR/prysm"
-else
-  NEW_BEACON="lighthouse"
-  BEACON_VOLUME="$DATA_DIR/lighthouse"
-fi
-
-# Clean up old data if beacon client changed
-if [ ! -z "$CURRENT_BEACON" ] && [ "$CURRENT_BEACON" != "$NEW_BEACON" ]; then
-    echo ">>> Beacon client changed from $CURRENT_BEACON to $NEW_BEACON"
-    echo ">>> Cleaning up old data..."
-    
-    # Stop containers
-    cd "$DATA_DIR" && docker compose down || true
-    
-    # Remove old beacon data
-    if [ "$CURRENT_BEACON" = "prysm" ]; then
-        rm -rf "$DATA_DIR/prysm"
-    elif [ "$CURRENT_BEACON" = "lighthouse" ]; then
-        rm -rf "$DATA_DIR/lighthouse"
-    fi
-fi
+# === CHECKPOINT SYNC ENDPOINT ===
+CHECKPOINT_SYNC_URL="https://sepolia.beaconstate.info"
+echo ">>> 使用以太坊社区维护的检查点同步：$CHECKPOINT_SYNC_URL"
 
 # === DEPENDENCY CHECK ===
-echo ">>> Checking required dependencies..."
+echo ">>> 正在检查依赖环境..."
 install_if_missing() {
   local cmd="$1"
   local pkg="$2"
 
   if ! command -v $cmd &> /dev/null; then
-    echo "⛔ Missing: $cmd → installing $pkg..."
+    echo "⛔ 缺少 $cmd，正在安装软件包 $pkg..."
     sudo apt update
     sudo apt install -y $pkg
   else
-    echo "✅ $cmd is already installed."
+    echo "✅ $cmd 已安装。"
   fi
 }
 
 # Docker check
 if ! command -v docker &> /dev/null || ! command -v docker compose &> /dev/null; then
-  echo "⛔ Docker or Docker Compose not found. Installing Docker..."
+  echo "⛔ 未检测到 Docker 或 Docker Compose，开始安装..."
 
   for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do
     sudo apt-get remove -y $pkg || true
@@ -98,7 +162,7 @@ if ! command -v docker &> /dev/null || ! command -v docker compose &> /dev/null;
   sudo docker run hello-world
   sudo systemctl enable docker && sudo systemctl restart docker
 else
-  echo "✅ Docker and Docker Compose are already installed."
+  echo "✅ Docker 与 Docker Compose 已安装。"
 fi
 
 install_if_missing curl curl
@@ -110,11 +174,11 @@ mkdir -p "$GETH_DIR"
 mkdir -p "$BEACON_VOLUME"
 
 # === GENERATE JWT SECRET ===
-echo ">>> Generating JWT secret..."
+echo ">>> 正在生成 JWT 密钥..."
 openssl rand -hex 32 > "$JWT_FILE"
 
 # === WRITE docker-compose.yml ===
-echo ">>> Writing docker-compose.yml..."
+echo ">>> 正在写入 docker-compose.yml..."
 cat > "$COMPOSE_FILE" <<EOF
 services:
   geth:
@@ -140,39 +204,10 @@ services:
       --http.vhosts=*
 EOF
 
-if [ "$NEW_BEACON" = "prysm" ]; then
-  cat >> "$COMPOSE_FILE" <<EOF
-
-  prysm:
-    image: gcr.io/prysmaticlabs/prysm/beacon-chain:v6.1.2
-    container_name: prysm
-    restart: unless-stopped
-    volumes:
-      - $BEACON_VOLUME:/data
-      - $JWT_FILE:/root/jwt.hex
-    depends_on:
-      - geth
-    ports:
-      - "4000:4000"
-      - "3500:3500"
-    command: >
-      --datadir=/data
-      --sepolia
-      --execution-endpoint=http://geth:8551
-      --jwt-secret=/root/jwt.hex
-      --genesis-beacon-api-url=https://lodestar-sepolia.chainsafe.io
-      --checkpoint-sync-url=https://sepolia.checkpoint-sync.ethpandaops.io
-      --accept-terms-of-use
-      --rpc-host=0.0.0.0 --rpc-port=4000
-      --grpc-gateway-host=0.0.0.0 --grpc-gateway-port=3500
-      --subscribe-all-subnets
-      --subscribe-all-data-subnets
-EOF
-else
-  cat >> "$COMPOSE_FILE" <<EOF
+cat >> "$COMPOSE_FILE" <<EOF
 
   lighthouse:
-    image: sigp/lighthouse:v8.0.0-rc.2
+    image: sigp/lighthouse:v8.0.0
     container_name: lighthouse
     restart: unless-stopped
     volumes:
@@ -189,67 +224,68 @@ else
       --network sepolia
       --execution-endpoint http://geth:8551
       --execution-jwt /root/jwt.hex
-      --checkpoint-sync-url=https://sepolia.checkpoint-sync.ethpandaops.io
+EOF
+
+if [ -n "$CHECKPOINT_SYNC_URL" ]; then
+  cat >> "$COMPOSE_FILE" <<EOF
+      --checkpoint-sync-url=$CHECKPOINT_SYNC_URL
+EOF
+fi
+
+cat >> "$COMPOSE_FILE" <<'EOF'
       --http
       --http-address 0.0.0.0
       --supernode
 EOF
-fi
 
 # === START DOCKER ===
-echo ">>> Starting Sepolia node with $NEW_BEACON..."
+echo ">>> 正在启动包含 Lighthouse 的 Sepolia 节点..."
 
 # Pull latest images first
-echo ">>> Pulling latest Docker images..."
+echo ">>> 拉取最新镜像..."
 cd "$DATA_DIR"
 docker compose pull
 
 # Start Geth first and wait for it to be ready
-echo ">>> Starting Geth..."
+echo ">>> 启动执行层 Geth..."
 docker compose up -d geth
 
 # Wait for Geth to be ready
-echo ">>> Waiting for Geth to be ready..."
+echo ">>> 等待 Geth 就绪..."
 while true; do
     if curl -s -X POST http://localhost:8545 \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' > /dev/null; then
-        echo ">>> Geth is ready!"
+        echo ">>> Geth 已就绪！"
         break
     fi
-    echo ">>> Waiting for Geth to start..."
+    echo ">>> Geth 启动中，稍候..."
     sleep 5
 done
 
 # Start beacon client
-echo ">>> Starting $NEW_BEACON beacon client..."
-docker compose up -d
+echo ">>> 启动共识层 Lighthouse..."
+docker compose up -d lighthouse
 
 # Wait for beacon client to be ready
-echo ">>> Waiting for beacon client to be ready..."
-if [ "$NEW_BEACON" = "prysm" ]; then
-    while true; do
-        if curl -s http://localhost:3500/eth/v1/node/syncing > /dev/null; then
-            echo ">>> Prysm beacon client is ready!"
-            break
-        fi
-        echo ">>> Waiting for Prysm to start..."
-        sleep 5
-    done
-else
-    while true; do
-        if curl -s http://localhost:5052/eth/v1/node/syncing > /dev/null; then
-            echo ">>> Lighthouse beacon client is ready!"
-            break
-        fi
-        echo ">>> Waiting for Lighthouse to start..."
-        sleep 5
-    done
-fi
+echo ">>> 等待 Lighthouse 就绪..."
+while true; do
+    if curl -s http://localhost:5052/eth/v1/node/syncing > /dev/null; then
+        echo ">>> Lighthouse 已就绪！"
+        break
+    fi
+    echo ">>> Lighthouse 启动中，稍候..."
+    sleep 5
+done
 
-echo ">>> Setup completed successfully!"
-echo ">>> Node is now running with:"
-echo "    - Geth v1.16.5 (Fusaka upgrade ready)"
-echo "    - $NEW_BEACON (Supernode enabled)"
-echo "    - RPC endpoint: http://localhost:8545"
-echo "    - Beacon API: http://localhost:$([ "$NEW_BEACON" = "prysm" ] && echo "3500" || echo "5052")"
+echo ">>> 部署完成！"
+echo ">>> 当前节点配置："
+echo "    - 执行层：Geth v1.16.5 (Fusaka ready)"
+echo "    - 共识层：Lighthouse v8.0.0 (已启用 Supernode)"
+if [ -n "$CHECKPOINT_SYNC_URL" ]; then
+  echo "    - 检查点同步：$CHECKPOINT_SYNC_URL"
+else
+  echo "    - 检查点同步：已关闭 (全量同步)"
+fi
+echo "    - RPC 接口：http://localhost:8545"
+echo "    - Beacon API：http://localhost:5052"
